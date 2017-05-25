@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>jsTree test</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jstree/3.2.1/themes/default/style.min.css" />
+</head>
+<body>
+  <h1>Ebay Categories List</h1>
+  Each Node is formatted as CategoryId:CategoryName:CategoryLevel:BestOfferEnabled
+  <div id="jstree">
+    <!-- inline HTML -->
+

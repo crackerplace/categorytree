@@ -1,0 +1,201 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
+"""A command line script to generate category tree for a given category id.
+
+When given the command-line argument "--rebuild" it uses the GetCategories API
+to download the category tree and create the SQLite database. If the database 
+already exists it is deleted.
+When given the command-line argument "--render <category_id>" it generates a 
+file named <category_id>.html that contains a simple web page displaying the
+category tree rooted at the given ID. 
+
+Example:
+    ./categories --rebuild
+    ./categories --render 20086        
+
+If the database does not exist or no category with the given ID could be found
+the program exits with an error.
+
+
+"""
+
+import sqlite3
+import os
+import requests
+import xml.etree.ElementTree as ET
+import sys
+from category import Category
+
+NAMESPACE = '{urn:ebay:apis:eBLBaseComponents}'
+DATABASE = 'category.db'
+REQUEST_HEADERS = {
+    'X-EBAY-API-CALL-NAME': 'GetCategories',
+    'X-EBAY-API-APP-NAME': 'fillme',
+    'X-EBAY-API-CERT-NAME': 'fillme',
+    'X-EBAY-API-DEV-NAME': 'fillme',
+    'X-EBAY-API-SITEID': 0,
+    'X-EBAY-API-COMPATIBILITY-LEVEL': 861,
+    }
+
+
+def get_connection():
+    '''Get the connection to the local sqlite database.'''
+    return sqlite3.connect(DATABASE)
+
+def exit(message):
+    sys.exit(message)
+
+class GetCategoriesRequest:
+
+    """A Request to build the sqlite category database by invoking 
+    GetCategories ebay api.
+
+    """
+
+    def __init__(self, initial_level, group_size):
+        """Create instance with the control parameters for downloading
+        the tree.
+
+        The initial_level will control the level(LevelLimit) of the 
+        tree that we get in our initial GetCategories call.The group_size
+        will be used to group all the categories from the previous call
+        whose level is equal to intial_level and which will be used for 
+        fetching the subtree's of each of these categories.This will
+        help in otpimizing our GetCategories call.
+        
+        Suppose intial_level = 3 and group_size = 5.Then we make an intial
+        GetCategories  call with level limit as 3.Now we take all category
+        id's(with level =3) and group them into buckets of size 5.Now will
+        make GetCategories call for each bucket with CategoryParent as the
+        id's in that bucket.    
+    
+        """
+
+        self.initial_level = initial_level
+        self.group_size = group_size
+
+    def save(self, categories_response):
+        """Save category response in database."""
+        categories = []
+        for child in categories_response:
+            id = int(child.find(NAMESPACE + 'CategoryID').text)
+            category_name = child.find(NAMESPACE + 'CategoryName').text
+            category_level = int(child.find(NAMESPACE + 'CategoryLevel'
+                                 ).text)
+            best_offer_enabled = 0
+            try:
+                if child.find(NAMESPACE + 'BestOfferEnabled').text \
+                    == 'true':
+                    best_offer_enabled = 1
+            except Exception, e:
+                pass
+            category_parent_id = int(child.find(NAMESPACE
+                    + 'CategoryParentID').text)
+            if category_parent_id == id:
+                category_parent_id = -1
+            category = (id, category_name, category_level,
+                        best_offer_enabled, category_parent_id)
+            categories.append(category)
+        with get_connection() as conn:
+            c = conn.cursor()
+            c.executemany('INSERT INTO category VALUES (?,?,?,?,?)',
+                          categories)
+
+    def getCategories(self):
+        """Download category tree from GetCategories ebay api."""
+        tree = ET.parse('GetCategoriesRequest.xml')
+        root = tree.getroot()
+        ET.register_namespace('', 'urn:ebay:apis:eBLBaseComponents')
+        limit = ET.SubElement(root, 'LevelLimit')
+        limit.text = str(self.initial_level)
+        root.extend(tuple(limit))
+        request_data = ET.tostring(root, encoding='utf-8', method='xml')
+
+        request_data = '<?xml version="1.0" encoding="utf-8"?>' \
+            + str(request_data)
+        r = requests.post('https://api.sandbox.ebay.com/ws/api.dll',
+                          headers=REQUEST_HEADERS, data=request_data)
+        response = ET.fromstring(r.text.encode('utf-8'))
+        categories_response = response.find(NAMESPACE + 'CategoryArray')
+        ET.dump(response)
+
+        # Categories at level equal to Limit level
+        category_ids_group = []
+        # Above limit level ids which can be processed
+        category_ids_above_limit = []
+        for child in categories_response:
+            id = int(child.find(NAMESPACE + 'CategoryID').text)
+            category_level = int(child.find(NAMESPACE + 'CategoryLevel'
+                                 ).text)
+            if category_level == self.initial_level:
+                category_ids_group.append(id)
+            else:
+                category_ids_above_limit.append(child)
+        self.save(category_ids_above_limit)
+
+        start = 0
+        while start <= len(category_ids_group) - 1:
+            end = start + self.group_size
+            if end > len(category_ids_group):
+                end = len(category_ids_group)
+            #print ('start:end ', start, end)
+            tree = ET.parse('GetCategoriesRequest.xml')
+            root = tree.getroot()
+            category_parent_ids = []
+            for category_id in category_ids_group[start:end]:
+                parent = ET.Element('CategoryParent')
+                parent.text = str(category_id)
+                category_parent_ids.append(parent)
+            root.extend(tuple(category_parent_ids))
+            request_data = ET.tostring(root, encoding='utf-8',
+                    method='xml')
+            request_data = '<?xml version="1.0" encoding="utf-8"?>' \
+                + str(request_data)
+            r = requests.post('https://api.sandbox.ebay.com/ws/api.dll'
+                              , headers=REQUEST_HEADERS,
+                              data=request_data)
+            response = ET.fromstring(r.text.encode('utf-8'))
+            categories_response = response.find(NAMESPACE
+                    + 'CategoryArray')
+            self.save(categories_response)
+            start = end
+
+    def purge(self):
+        """Remove any existing local database."""
+        if os.path.exists(DATABASE):
+            os.remove(DATABASE)
+
+    def execute(self):
+        """Execute this Request Instance"""
+        self.purge()
+        with get_connection() as conn:
+            c = conn.cursor()
+            c.execute('''CREATE TABLE category (id integer primary key,
+                     name text, level integer, best_offer_enabled integer, parent_id integer);'''
+                      )
+            index_sql = 'CREATE INDEX parent_id_index ON category (parent_id);'
+            c.execute(index_sql)
+        self.getCategories()
+
+
+if __name__ == '__main__':
+    if len(sys.argv) < 2:
+        print('Oooooooops ! Please read the below description')
+        print('----------------------------------------------')
+        exit(__doc__)
+    arg = sys.argv[1]
+    if arg == '--rebuild':
+        categories = GetCategoriesRequest(5, 20)
+        categories.execute()
+    elif arg == '--render':
+        if len(sys.argv) < 3:
+            exit('Enter a category Id')
+
+        # assuming an integer id
+        category_id = int(sys.argv[2])
+        Category().sub_tree_for_category(category_id)
+    else:
+        print __doc__
+
+			

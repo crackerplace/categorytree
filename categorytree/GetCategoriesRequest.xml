@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+                <GetCategoriesRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+                  <CategorySiteID>0</CategorySiteID>
+                  <ViewAllNodes>True</ViewAllNodes>
+                  <DetailLevel>ReturnAll</DetailLevel>
+                  <RequesterCredentials>
+                    <eBayAuthToken></eBayAuthToken>
+                  </RequesterCredentials>
+                </GetCategoriesRequest>
